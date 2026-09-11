@@ -10,7 +10,7 @@ Group=pi
 WorkingDirectory=/opt/matter-server/node_modules/matter-server
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=TZ=Europe/Stockholm
-ExecStart=/usr/bin/env node --enable-source-maps /opt/matter-server/node_modules/matter-server/dist/esm/MatterServer.js --storage-path /var/lib/matter-server --primary-interface eth0 --default-fabric-label Henrik-Pi --production-mode
+ExecStart=/usr/bin/env node --enable-source-maps /opt/matter-server/node_modules/matter-server/dist/esm/MatterServer.js --storage-path /var/lib/matter-server --primary-interface eth0 --default-fabric-label matter-metrics-pi --production-mode
 Restart=on-failure
 RestartSec=5
 
