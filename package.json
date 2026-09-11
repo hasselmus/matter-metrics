@@ -1,0 +1,14 @@
+{
+  "name": "matter-metrics",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone Matter telemetry logger and web UI for GRILLPLATS and ALPSTUGA",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs"
+  }
+}
