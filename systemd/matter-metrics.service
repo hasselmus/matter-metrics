@@ -1,0 +1,23 @@
+[Unit]
+Description=Matter Metrics Logger and Web UI
+After=network-online.target matter-server.service
+Wants=network-online.target matter-server.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/matter-metrics
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=TZ=Europe/Stockholm
+Environment=MATTER_WS_URL=ws://127.0.0.1:5580/ws
+Environment=POWER_NODE_ID=1
+Environment=AIR_NODE_ID=2
+Environment=DB_PATH=/var/lib/matter-metrics/metrics.sqlite
+Environment=PORT=8791
+ExecStart=/usr/bin/env node /opt/matter-metrics/server.mjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
