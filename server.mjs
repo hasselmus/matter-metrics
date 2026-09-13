@@ -203,6 +203,9 @@ function readingAtOrBefore(ts) {
 function firstReadingAtOrAfter(ts) {
   return db.prepare('SELECT virtual_mwh, ts_ms FROM energy_samples WHERE ts_ms >= ? ORDER BY ts_ms ASC LIMIT 1').get(ts) ?? null;
 }
+function latestReading() {
+  return db.prepare('SELECT virtual_mwh, ts_ms FROM energy_samples ORDER BY ts_ms DESC LIMIT 1').get() ?? null;
+}
 function periodEnergy(start, end = Date.now()) {
   let a = readingAtOrBefore(start);
   let partial = false;
@@ -247,63 +250,7 @@ function json(res, obj) {
   res.end(body);
 }
 
-const HTML = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Matter telemetry</title>
-<style>
-body{font:16px system-ui,sans-serif;max-width:1120px;margin:28px auto;padding:0 18px;background:#111;color:#eee}h1{font-size:25px;margin-bottom:8px}h2{margin-top:32px}.status{color:#aaa;font-size:13px;margin-bottom:10px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px}.card{background:#1d1d1d;padding:14px;border-radius:9px}.v{font-size:28px;font-weight:650;margin-top:4px}.sub{color:#aaa;font-size:13px}.ok{color:#8fd18f}.bad{color:#ff9c9c}.charts{display:grid;grid-template-columns:1fr;gap:15px;margin-top:18px}canvas{width:100%;height:235px;background:#181818;border-radius:8px}.note{margin-top:12px;color:#aaa;font-size:13px}
-</style></head><body>
-<h1>Matter telemetry</h1>
-
-<h2>GRILLPLATS power meter</h2><div id="pconn" class="status"></div>
-<div class="cards">
-<div class="card"><div>Current</div><div class="v" id="power">—</div><div class="sub" id="electrical"></div></div>
-<div class="card"><div>Today</div><div class="v" id="today">—</div></div>
-<div class="card"><div>Yesterday</div><div class="v" id="yesterday">—</div></div>
-<div class="card"><div>Last 7 days</div><div class="v" id="seven">—</div></div>
-<div class="card"><div>Last 30 days</div><div class="v" id="thirty">—</div></div>
-</div>
-<div class="charts"><canvas id="powerGraph" width="1040" height="235"></canvas></div>
-<div class="note">* partial period: tracking began after the start of that period.</div>
-
-<h2>ALPSTUGA air quality</h2><div id="aconn" class="status"></div>
-<div class="cards">
-<div class="card"><div>Air quality</div><div class="v" id="aq">—</div></div>
-<div class="card"><div>CO₂</div><div class="v" id="co2">—</div><div class="sub">ppm</div></div>
-<div class="card"><div>PM2.5</div><div class="v" id="pm25">—</div><div class="sub">µg/m³</div></div>
-<div class="card"><div>Temperature</div><div class="v" id="temp">—</div></div>
-<div class="card"><div>Relative humidity</div><div class="v" id="rh">—</div></div>
-</div>
-<div class="charts">
-<canvas id="co2Graph" width="1040" height="235"></canvas>
-<canvas id="pmGraph" width="1040" height="235"></canvas>
-<canvas id="tempGraph" width="1040" height="235"></canvas>
-<canvas id="rhGraph" width="1040" height="235"></canvas>
-</div>
-<script>
-const fmtEnergy=e=>e==null?'—':e.toFixed(3)+' kWh';
-function setPeriod(id,p){document.getElementById(id).textContent=fmtEnergy(p?.kwh)+(p?.partial?' *':'')}
-function setText(id,v){document.getElementById(id).textContent=v}
-function statusLine(id,connected,lastSeen,label){const e=document.getElementById(id);e.className='status '+(connected?'ok':'bad');e.textContent=(connected?'Matter connected':'Matter disconnected')+(lastSeen?' · '+label+' '+new Date(lastSeen).toLocaleTimeString():'')}
-function draw(cId,a,key,label,unit,minFloor=null){
- const c=document.getElementById(cId),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);if(a.length<2){x.fillStyle='#aaa';x.fillText(label+' · waiting for history',12,18);return}
- const pts=a.filter(p=>p[key]!=null);if(pts.length<2)return;
- const vals=pts.map(p=>Number(p[key]));let min=Math.min(...vals),max=Math.max(...vals);if(minFloor!==null)min=Math.min(min,minFloor);if(max===min){max+=1;min-=1}
- const pad=(max-min)*0.08;min-=pad;max+=pad;const now=Date.now(),start=now-86400000;
- x.strokeStyle='#888';x.beginPath();for(let i=0;i<pts.length;i++){const px=10+Math.max(0,Math.min(1,(pts[i].ts_ms-start)/(now-start)))*(c.width-20),py=c.height-10-((vals[i]-min)/(max-min))*(c.height-24);if(i===0)x.moveTo(px,py);else x.lineTo(px,py)}x.stroke();x.fillStyle='#aaa';x.fillText(label+' · 24 h · '+vals[vals.length-1].toFixed(key==='temperature_c'?1:0)+' '+unit,12,16)
-}
-async function refresh(){
- const [p,a,ph,ah]=await Promise.all([
-  fetch('/api/power-status').then(r=>r.json()),fetch('/api/air-status').then(r=>r.json()),
-  fetch('/api/power-history?hours=24').then(r=>r.json()),fetch('/api/air-history?hours=24').then(r=>r.json())]);
- setText('power',p.powerW==null?'—':p.powerW.toFixed(1)+' W');
- setText('electrical',(p.voltageV==null?'':p.voltageV.toFixed(0)+' V')+(p.currentA==null?'':' · '+(p.currentA*1000).toFixed(0)+' mA'));
- setPeriod('today',p.today);setPeriod('yesterday',p.yesterday);setPeriod('seven',p.sevenDays);setPeriod('thirty',p.thirtyDays);statusLine('pconn',p.connected,p.lastSeenMs,'last data');
- setText('aq',a.airQualityText??'—');setText('co2',a.co2Ppm==null?'—':a.co2Ppm.toFixed(0));setText('pm25',a.pm25Ugm3==null?'—':a.pm25Ugm3.toFixed(1));setText('temp',a.temperatureC==null?'—':a.temperatureC.toFixed(2)+' °C');setText('rh',a.humidityPct==null?'—':a.humidityPct.toFixed(2)+' %');statusLine('aconn',a.connected,a.lastSeenMs,'last data');
- draw('powerGraph',ph,'power_w','Power','W',0);draw('co2Graph',ah,'co2_ppm','CO₂','ppm');draw('pmGraph',ah,'pm25_ugm3','PM2.5','µg/m³',0);draw('tempGraph',ah,'temperature_c','Temperature','°C');draw('rhGraph',ah,'humidity_pct','Relative humidity','%',0);
-}
-refresh();setInterval(refresh,15000);
-</script></body></html>`;
+const HTML = fs.readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
 
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
