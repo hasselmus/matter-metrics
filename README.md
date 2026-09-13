@@ -35,7 +35,7 @@ The Matter devices can remain commissioned into Apple Home at the same time; the
 - Open Home Foundation `matter-server` already commissioned to the devices
 - Working IPv6/mDNS connectivity to the Thread border router
 
-`server.mjs` itself has no third-party npm dependencies; it uses Node's built-in HTTP, WebSocket and SQLite facilities.
+`server.mjs` itself has no third-party npm dependencies; it uses Node's built-in HTTP, WebSocket and SQLite facilities. The browser dashboard is in `public/index.html`.
 
 ## Defaults
 
@@ -57,15 +57,23 @@ DB_PATH
 PORT
 ```
 
-Example:
+Recommended installation is to clone the repository so the dashboard assets stay together:
 
 ```bash
 sudo install -d -o pi -g pi /opt/matter-metrics /var/lib/matter-metrics
-sudo install -o pi -g pi -m 0644 server.mjs /opt/matter-metrics/server.mjs
+git clone https://github.com/hasselmus/matter-metrics.git /opt/matter-metrics
 node /opt/matter-metrics/server.mjs
 ```
 
 Then open `http://<pi-address>:8791/`.
+
+## Dashboard
+
+The dashboard shows GRILLPLATS power/energy and ALPSTUGA air-quality history on a common time axis.
+
+Graph controls provide 24 h, 12 h, 6 h, 3 h and 1 h views. Drag horizontally across any graph to zoom all graphs to the same interval; double-click a graph or press **Reset** to return to 24 hours. Clock labels are drawn along the x-axis.
+
+CO₂ uses robust display scaling so brief local spikes (for example a concentrated CO₂ plume) do not flatten an otherwise useful 24-hour trace. Raw values remain unchanged in SQLite. When points exceed the displayed range, the graph clips them at the top and reports the raw peak and number of clipped samples. If high CO₂ is sustained rather than exceptional, the scale expands automatically.
 
 ## systemd
 
