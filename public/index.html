@@ -1,0 +1,127 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Matter telemetry</title>
+<style>
+body{font:16px system-ui,sans-serif;max-width:1120px;margin:28px auto;padding:0 18px;background:#111;color:#eee}h1{font-size:25px;margin-bottom:8px}h2{margin-top:32px}.status{color:#aaa;font-size:13px;margin-bottom:10px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px}.card{background:#1d1d1d;padding:14px;border-radius:9px}.v{font-size:28px;font-weight:650;margin-top:4px}.sub{color:#aaa;font-size:13px}.ok{color:#8fd18f}.bad{color:#ff9c9c}.charts{display:grid;grid-template-columns:1fr;gap:15px;margin-top:18px}canvas{width:100%;height:250px;background:#181818;border-radius:8px;touch-action:none;cursor:crosshair}.note{margin-top:12px;color:#aaa;font-size:13px}.graph-tools{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:14px 0 4px;color:#aaa;font-size:13px}.graph-tools button{background:#242424;color:#ddd;border:1px solid #444;border-radius:6px;padding:5px 9px;cursor:pointer}.graph-tools button:hover,.graph-tools button.active{background:#383838;border-color:#777}.graph-tools .hint{margin-left:5px}
+</style></head><body>
+<h1>Matter telemetry</h1>
+
+<h2>GRILLPLATS power meter</h2><div id="pconn" class="status"></div>
+<div class="cards">
+<div class="card"><div>Current</div><div class="v" id="power">—</div><div class="sub" id="electrical"></div></div>
+<div class="card"><div>Today</div><div class="v" id="today">—</div></div>
+<div class="card"><div>Yesterday</div><div class="v" id="yesterday">—</div></div>
+<div class="card"><div>Last 7 days</div><div class="v" id="seven">—</div></div>
+<div class="card"><div>Last 30 days</div><div class="v" id="thirty">—</div></div>
+</div>
+<div class="note">* partial period: tracking began after the start of that period.</div>
+
+<h2>ALPSTUGA air quality</h2><div id="aconn" class="status"></div>
+<div class="cards">
+<div class="card"><div>Air quality</div><div class="v" id="aq">—</div></div>
+<div class="card"><div>CO₂</div><div class="v" id="co2">—</div><div class="sub">ppm</div></div>
+<div class="card"><div>PM2.5</div><div class="v" id="pm25">—</div><div class="sub">µg/m³</div></div>
+<div class="card"><div>Temperature</div><div class="v" id="temp">—</div></div>
+<div class="card"><div>Relative humidity</div><div class="v" id="rh">—</div></div>
+</div>
+
+<div class="graph-tools">
+<span>Graphs:</span>
+<button data-hours="24" class="active">24 h</button><button data-hours="12">12 h</button><button data-hours="6">6 h</button><button data-hours="3">3 h</button><button data-hours="1">1 h</button><button id="resetZoom">Reset</button>
+<span class="hint">Drag horizontally on any graph to zoom all graphs; double-click to reset.</span>
+</div>
+<div class="charts">
+<canvas id="powerGraph" width="1040" height="250"></canvas>
+<canvas id="co2Graph" width="1040" height="250"></canvas>
+<canvas id="pmGraph" width="1040" height="250"></canvas>
+<canvas id="tempGraph" width="1040" height="250"></canvas>
+<canvas id="rhGraph" width="1040" height="250"></canvas>
+</div>
+<script>
+const fmtEnergy=e=>e==null?'—':e.toFixed(3)+' kWh';
+function setPeriod(id,p){document.getElementById(id).textContent=fmtEnergy(p?.kwh)+(p?.partial?' *':'')}
+function setText(id,v){document.getElementById(id).textContent=v}
+function statusLine(id,connected,lastSeen,label){const e=document.getElementById(id);e.className='status '+(connected?'ok':'bad');e.textContent=(connected?'Matter connected':'Matter disconnected')+(lastSeen?' · '+label+' '+new Date(lastSeen).toLocaleTimeString():'')}
+
+let powerHistory=[],airHistory=[];
+let view={hours:24,start:null,end:null};
+const plotBox={left:50,right:14,top:25,bottom:30};
+function viewWindow(){if(view.start!==null)return [view.start,view.end];const end=Date.now();return [end-view.hours*3600000,end]}
+function viewLabel(){const s=viewWindow(),mins=Math.round((s[1]-s[0])/60000);if(view.start===null)return view.hours+' h';if(mins>=120)return (mins/60).toFixed(mins%60?1:0)+' h';return mins+' min'}
+function clock(ts){return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}
+function roundUp(v,step){return Math.ceil(v/step)*step}
+function percentile(vals,q){const a=[...vals].sort((a,b)=>a-b);return a[Math.min(a.length-1,Math.max(0,Math.floor((a.length-1)*q)))]}
+function setLatestHours(h){view={hours:h,start:null,end:null};document.querySelectorAll('[data-hours]').forEach(b=>b.classList.toggle('active',Number(b.dataset.hours)===h));renderGraphs()}
+function resetZoom(){setLatestHours(24)}
+
+function draw(cId,a,key,label,unit,opts={}){
+ const c=document.getElementById(cId),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);
+ const w=viewWindow(),start=w[0],end=w[1];
+ const pts=a.filter(p=>p[key]!=null&&p.ts_ms>=start&&p.ts_ms<=end);if(pts.length<2){x.fillStyle='#aaa';x.fillText(label+' · waiting for history',12,18);return}
+ const vals=pts.map(p=>Number(p[key])).filter(Number.isFinite);if(vals.length<2)return;
+ const rawMin=Math.min(...vals),rawMax=Math.max(...vals);let min=rawMin,max=rawMax,clipped=0;
+ if(opts.co2){
+   min=Math.min(350,rawMin);
+   const highFraction=vals.filter(v=>v>2500).length/vals.length;
+   if(highFraction<=0.15)max=Math.min(2500,Math.max(1200,roundUp(percentile(vals,0.95)*1.15,100)));
+   else max=Math.max(2500,Math.min(10000,roundUp(percentile(vals,0.95)*1.10,500)));
+   clipped=vals.filter(v=>v>max).length;
+ }else{
+   if(opts.minFloor!==undefined)min=Math.min(min,opts.minFloor);
+   if(max===min){max+=1;min-=1}
+   const pad=(max-min)*0.08;min-=pad;max+=pad;
+ }
+ if(max<=min)max=min+1;
+ const L=plotBox.left,R=c.width-plotBox.right,T=plotBox.top,B=c.height-plotBox.bottom;
+ x.font='12px system-ui,sans-serif';x.fillStyle='#aaa';x.strokeStyle='#333';x.lineWidth=1;
+ for(let i=0;i<5;i++){
+   const f=i/4,px=L+f*(R-L),ts=start+f*(end-start);x.beginPath();x.moveTo(px,T);x.lineTo(px,B);x.stroke();
+   const t=clock(ts),tw=x.measureText(t).width;let tx=px-tw/2;if(i===0)tx=L;if(i===4)tx=R-tw;x.fillText(t,tx,c.height-9);
+ }
+ for(let i=0;i<3;i++){
+   const f=i/2,py=B-f*(B-T),v=min+f*(max-min);x.beginPath();x.moveTo(L,py);x.lineTo(R,py);x.stroke();
+   const digits=(Math.abs(max-min)<10)?1:0;x.fillText(v.toFixed(digits),5,py+4);
+ }
+ x.strokeStyle='#888';x.lineWidth=1.2;x.beginPath();let begun=false;
+ for(let i=0;i<pts.length;i++){
+   const val=Number(pts[i][key]);if(!Number.isFinite(val))continue;const px=L+((pts[i].ts_ms-start)/(end-start))*(R-L),shown=Math.max(min,Math.min(max,val)),py=B-((shown-min)/(max-min))*(B-T);
+   if(!begun){x.moveTo(px,py);begun=true}else x.lineTo(px,py);
+ }
+ x.stroke();
+ if(opts.co2&&clipped){x.fillStyle='#bbb';for(const p of pts){const v=Number(p[key]);if(v<=max)continue;const px=L+((p.ts_ms-start)/(end-start))*(R-L);x.fillRect(px-1,T,2,6)}}
+ const current=vals[vals.length-1],decimals=(key==='temperature_c'||key==='pm25_ugm3')?1:0;
+ let title=label+' · '+viewLabel()+' · '+current.toFixed(decimals)+' '+unit;
+ if(opts.co2&&clipped)title+=' · peak '+rawMax.toFixed(0)+' ppm ('+clipped+' clipped)';
+ x.fillStyle='#aaa';x.fillText(title,12,16);
+}
+function renderGraphs(){
+ draw('powerGraph',powerHistory,'power_w','Power','W',{minFloor:0});
+ draw('co2Graph',airHistory,'co2_ppm','CO₂','ppm',{co2:true});
+ draw('pmGraph',airHistory,'pm25_ugm3','PM2.5','µg/m³',{minFloor:0});
+ draw('tempGraph',airHistory,'temperature_c','Temperature','°C');
+ draw('rhGraph',airHistory,'humidity_pct','Relative humidity','%',{minFloor:0});
+}
+
+function timeAtCanvasX(c,clientX){const r=c.getBoundingClientRect(),cx=(clientX-r.left)*c.width/r.width,f=Math.max(0,Math.min(1,(cx-plotBox.left)/(c.width-plotBox.left-plotBox.right))),w=viewWindow();return w[0]+f*(w[1]-w[0])}
+let drag=null;
+for(const c of document.querySelectorAll('canvas')){
+ c.addEventListener('pointerdown',e=>{drag={c,startX:e.clientX,startT:timeAtCanvasX(c,e.clientX)};c.setPointerCapture(e.pointerId)});
+ c.addEventListener('pointerup',e=>{if(!drag||drag.c!==c)return;const dx=Math.abs(e.clientX-drag.startX),endT=timeAtCanvasX(c,e.clientX);if(dx>25){const a=Math.min(drag.startT,endT),b=Math.max(drag.startT,endT);if(b-a>=5*60000){view={hours:null,start:a,end:b};document.querySelectorAll('[data-hours]').forEach(b=>b.classList.remove('active'));renderGraphs()}}drag=null});
+ c.addEventListener('dblclick',resetZoom);
+}
+document.querySelectorAll('[data-hours]').forEach(b=>b.addEventListener('click',()=>setLatestHours(Number(b.dataset.hours))));
+document.getElementById('resetZoom').addEventListener('click',resetZoom);
+
+async function refresh(){
+ const [p,a,ph,ah]=await Promise.all([
+  fetch('/api/power-status').then(r=>r.json()),fetch('/api/air-status').then(r=>r.json()),
+  fetch('/api/power-history?hours=24').then(r=>r.json()),fetch('/api/air-history?hours=24').then(r=>r.json())]);
+ powerHistory=ph;airHistory=ah;
+ setText('power',p.powerW==null?'—':p.powerW.toFixed(1)+' W');
+ setText('electrical',(p.voltageV==null?'':p.voltageV.toFixed(0)+' V')+(p.currentA==null?'':' · '+(p.currentA*1000).toFixed(0)+' mA'));
+ setPeriod('today',p.today);setPeriod('yesterday',p.yesterday);setPeriod('seven',p.sevenDays);setPeriod('thirty',p.thirtyDays);statusLine('pconn',p.connected,p.lastSeenMs,'last data');
+ setText('aq',a.airQualityText??'—');setText('co2',a.co2Ppm==null?'—':a.co2Ppm.toFixed(0));setText('pm25',a.pm25Ugm3==null?'—':a.pm25Ugm3.toFixed(1));setText('temp',a.temperatureC==null?'—':a.temperatureC.toFixed(2)+' °C');setText('rh',a.humidityPct==null?'—':a.humidityPct.toFixed(2)+' %');statusLine('aconn',a.connected,a.lastSeenMs,'last data');
+ renderGraphs();
+}
+refresh();setInterval(refresh,15000);
+</script></body></html>
