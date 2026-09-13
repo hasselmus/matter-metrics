@@ -23,6 +23,8 @@ body{font:16px system-ui,sans-serif;max-width:1120px;margin:28px auto;padding:0 
 <div class="card"><div>PM2.5</div><div class="v" id="pm25">—</div><div class="sub">µg/m³</div></div>
 <div class="card"><div>Temperature</div><div class="v" id="temp">—</div></div>
 <div class="card"><div>Relative humidity</div><div class="v" id="rh">—</div></div>
+<div class="card"><div>Dew point</div><div class="v" id="dew">—</div><div class="sub">calculated from temperature + RH</div></div>
+<div class="card"><div>Absolute humidity</div><div class="v" id="ah">—</div><div class="sub">calculated from temperature + RH</div></div>
 </div>
 
 <div class="graph-tools">
@@ -36,12 +38,34 @@ body{font:16px system-ui,sans-serif;max-width:1120px;margin:28px auto;padding:0 
 <canvas id="pmGraph" width="1040" height="250"></canvas>
 <canvas id="tempGraph" width="1040" height="250"></canvas>
 <canvas id="rhGraph" width="1040" height="250"></canvas>
+<canvas id="dewGraph" width="1040" height="250"></canvas>
+<canvas id="ahGraph" width="1040" height="250"></canvas>
 </div>
 <script>
 const fmtEnergy=e=>e==null?'—':e.toFixed(3)+' kWh';
 function setPeriod(id,p){document.getElementById(id).textContent=fmtEnergy(p?.kwh)+(p?.partial?' *':'')}
 function setText(id,v){document.getElementById(id).textContent=v}
 function statusLine(id,connected,lastSeen,label){const e=document.getElementById(id);e.className='status '+(connected?'ok':'bad');e.textContent=(connected?'Matter connected':'Matter disconnected')+(lastSeen?' · '+label+' '+new Date(lastSeen).toLocaleTimeString():'')}
+
+// Derived moisture metrics. Dew point uses the Magnus approximation; absolute
+// humidity is calculated from water-vapour partial pressure. These are derived
+// at display time, so no duplicate values need to be stored in SQLite.
+function moistureMetrics(temperatureC,humidityPct){
+ const t=Number(temperatureC),rh=Number(humidityPct);
+ if(!Number.isFinite(t)||!Number.isFinite(rh)||rh<=0)return {dewPointC:null,absoluteHumidityGm3:null};
+ const r=Math.max(0.1,Math.min(100,rh));
+ const a=17.62,b=243.12;
+ const gamma=Math.log(r/100)+(a*t)/(b+t);
+ const dewPointC=(b*gamma)/(a-gamma);
+ const saturationHpa=6.112*Math.exp((17.67*t)/(t+243.5));
+ const vapourHpa=(r/100)*saturationHpa;
+ const absoluteHumidityGm3=216.7*vapourHpa/(t+273.15);
+ return {dewPointC,absoluteHumidityGm3};
+}
+function withDerivedMoisture(p){
+ const m=moistureMetrics(p.temperature_c,p.humidity_pct);
+ return {...p,dew_point_c:m.dewPointC,absolute_humidity_gm3:m.absoluteHumidityGm3};
+}
 
 let powerHistory=[],airHistory=[];
 let view={hours:24,start:null,end:null};
@@ -89,7 +113,7 @@ function draw(cId,a,key,label,unit,opts={}){
  }
  x.stroke();
  if(opts.co2&&clipped){x.fillStyle='#bbb';for(const p of pts){const v=Number(p[key]);if(v<=max)continue;const px=L+((p.ts_ms-start)/(end-start))*(R-L);x.fillRect(px-1,T,2,6)}}
- const current=vals[vals.length-1],decimals=(key==='temperature_c'||key==='pm25_ugm3')?1:0;
+ const current=vals[vals.length-1],decimals=opts.decimals??((key==='temperature_c'||key==='pm25_ugm3')?1:0);
  let title=label+' · '+viewLabel()+' · '+current.toFixed(decimals)+' '+unit;
  if(opts.co2&&clipped)title+=' · peak '+rawMax.toFixed(0)+' ppm ('+clipped+' clipped)';
  x.fillStyle='#aaa';x.fillText(title,12,16);
@@ -97,9 +121,11 @@ function draw(cId,a,key,label,unit,opts={}){
 function renderGraphs(){
  draw('powerGraph',powerHistory,'power_w','Power','W',{minFloor:0});
  draw('co2Graph',airHistory,'co2_ppm','CO₂','ppm',{co2:true});
- draw('pmGraph',airHistory,'pm25_ugm3','PM2.5','µg/m³',{minFloor:0});
- draw('tempGraph',airHistory,'temperature_c','Temperature','°C');
+ draw('pmGraph',airHistory,'pm25_ugm3','PM2.5','µg/m³',{minFloor:0,decimals:1});
+ draw('tempGraph',airHistory,'temperature_c','Temperature','°C',{decimals:1});
  draw('rhGraph',airHistory,'humidity_pct','Relative humidity','%',{minFloor:0});
+ draw('dewGraph',airHistory,'dew_point_c','Dew point','°C',{decimals:1});
+ draw('ahGraph',airHistory,'absolute_humidity_gm3','Absolute humidity','g/m³',{minFloor:0,decimals:1});
 }
 
 function timeAtCanvasX(c,clientX){const r=c.getBoundingClientRect(),cx=(clientX-r.left)*c.width/r.width,f=Math.max(0,Math.min(1,(cx-plotBox.left)/(c.width-plotBox.left-plotBox.right))),w=viewWindow();return w[0]+f*(w[1]-w[0])}
@@ -116,11 +142,14 @@ async function refresh(){
  const [p,a,ph,ah]=await Promise.all([
   fetch('/api/power-status').then(r=>r.json()),fetch('/api/air-status').then(r=>r.json()),
   fetch('/api/power-history?hours=24').then(r=>r.json()),fetch('/api/air-history?hours=24').then(r=>r.json())]);
- powerHistory=ph;airHistory=ah;
+ powerHistory=ph;airHistory=ah.map(withDerivedMoisture);
+ const moisture=moistureMetrics(a.temperatureC,a.humidityPct);
  setText('power',p.powerW==null?'—':p.powerW.toFixed(1)+' W');
  setText('electrical',(p.voltageV==null?'':p.voltageV.toFixed(0)+' V')+(p.currentA==null?'':' · '+(p.currentA*1000).toFixed(0)+' mA'));
  setPeriod('today',p.today);setPeriod('yesterday',p.yesterday);setPeriod('seven',p.sevenDays);setPeriod('thirty',p.thirtyDays);statusLine('pconn',p.connected,p.lastSeenMs,'last data');
- setText('aq',a.airQualityText??'—');setText('co2',a.co2Ppm==null?'—':a.co2Ppm.toFixed(0));setText('pm25',a.pm25Ugm3==null?'—':a.pm25Ugm3.toFixed(1));setText('temp',a.temperatureC==null?'—':a.temperatureC.toFixed(2)+' °C');setText('rh',a.humidityPct==null?'—':a.humidityPct.toFixed(2)+' %');statusLine('aconn',a.connected,a.lastSeenMs,'last data');
+ setText('aq',a.airQualityText??'—');setText('co2',a.co2Ppm==null?'—':a.co2Ppm.toFixed(0));setText('pm25',a.pm25Ugm3==null?'—':a.pm25Ugm3.toFixed(1));setText('temp',a.temperatureC==null?'—':a.temperatureC.toFixed(2)+' °C');setText('rh',a.humidityPct==null?'—':a.humidityPct.toFixed(2)+' %');
+ setText('dew',moisture.dewPointC==null?'—':moisture.dewPointC.toFixed(1)+' °C');setText('ah',moisture.absoluteHumidityGm3==null?'—':moisture.absoluteHumidityGm3.toFixed(1)+' g/m³');
+ statusLine('aconn',a.connected,a.lastSeenMs,'last data');
  renderGraphs();
 }
 refresh();setInterval(refresh,15000);
